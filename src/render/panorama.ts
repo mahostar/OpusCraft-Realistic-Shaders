@@ -31,6 +31,8 @@ const SIZE = 1024;
 export class Panorama {
   state: 'idle' | 'loading' | 'ready' = 'idle';
   private faces: WebGLTexture[] = [];
+  private shadedFaces: WebGLTexture[] = [];
+  private capturing = false;
   private shader: Shader | null = null;
   private vao: WebGLVertexArrayObject | null = null;
   spin = 0;
@@ -63,7 +65,7 @@ export class Panorama {
   }
 
   private progress(): void {
-    if (!this.cm || !this.world) return;
+    if (!this.cm || !this.world || this.capturing) return;
     this.cm.update();
     const cx = Math.floor(this.camPos[0]) >> 4, cz = Math.floor(this.camPos[2]) >> 4;
     // ready when all chunks within radius 6 are meshed
@@ -80,15 +82,20 @@ export class Panorama {
     this.progressFraction = ready / total;
     if (!done) return;
     if (this.waitFrames++ < 3) return;
+    this.capturing=true;
+    void this.capturePanorama();
+  }
+
+  private async capturePanorama(): Promise<void> {
     this.pickViewpoint();
-    this.renderFaces();
-    // free generation resources
+    this.faces=this.renderFaces(false);
+    await this.game.renderer.prepareHyperShader();
+    this.shadedFaces=this.renderFaces(true);
+    this.game.renderer.releaseHyperShader();
     this.pool?.terminate();
-    this.pool = null;
-    for (const k of [...this.game.renderer.world.meshes.keys()]) this.game.renderer.world.dispose(k);
-    this.world = null;
-    this.cm = null;
-    this.state = 'ready';
+    this.pool=null;
+    for(const key of [...this.game.renderer.world.meshes.keys()])this.game.renderer.world.dispose(key);
+    this.world=null;this.cm=null;this.state='ready';this.capturing=false;
   }
 
   /** ground height ignoring trees and plants */
@@ -143,7 +150,8 @@ export class Panorama {
     this.camPos = [bx + 0.5, by + 1.62 + 0.5, bz + 0.5];
   }
 
-  private renderFaces(): void {
+  private renderFaces(hyperShader: boolean): WebGLTexture[] {
+    const faces: WebGLTexture[]=[];
     const g = this.game;
     const gl = g.gl;
     const r = g.renderer;
@@ -172,15 +180,16 @@ export class Panorama {
       const [yaw, pitch] = views[i];
       r.render(
         { x: this.camPos[0], y: this.camPos[1], z: this.camPos[2], yaw, pitch, fov: 90 },
-        { dayTime: level.dayTime, ticks: 0, partial: 0, weather: { rain: 0, thunder: 0, flash: 0 }, biome: this.world!.getBiome(Math.floor(this.camPos[0]), Math.floor(this.camPos[2])), gamma: 0.5, nightVision: 0, level },
+        { dayTime: level.dayTime, ticks: 0, partial: 0, weather: { rain: 0, thunder: 0, flash: 0 }, biome: this.world!.getBiome(Math.floor(this.camPos[0]), Math.floor(this.camPos[2])), gamma: 0.5, nightVision: 0, level, hyperShader, outputFramebuffer: fb },
       );
-      this.faces.push(tex);
+      faces.push(tex);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fb);
     gl.deleteRenderbuffer(depth);
     r.renderDistance = rd;
     r.resize(ow, oh);
+    return faces;
   }
 
   /** loading progress 0..1 while generating */
@@ -231,7 +240,7 @@ export class Panorama {
       rotateX(v, v, -pitch * DEG);
       s.mat4('u_view', v);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.faces[i]);
+      gl.bindTexture(gl.TEXTURE_2D, (g.opts.hyperShader ? this.shadedFaces : this.faces)[i]);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
     gl.bindVertexArray(null);

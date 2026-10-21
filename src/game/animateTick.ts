@@ -80,6 +80,9 @@ function shapeMaxY(st: number): number {
 }
 
 export class AmbientTicker {
+  /** Graphics profile scaling for biome motes only; block effects keep their rates. */
+  biomeParticleDensity = 1;
+  rainParticleDensity = 1;
   private rainSoundTime = 0;
   constructor(private readonly level: Level) {}
 
@@ -111,7 +114,7 @@ export class AmbientTicker {
       const n2 = BLOCKS[STATE_BLOCK[st]].name;
       // (vanilla CampfireBlock.isLitCampfire: either campfire)
       const smoke = FLAGS[st] & F_LAVA || n2 === 'magma_block' || ((n2 === 'campfire' || n2 === 'soul_campfire') && BLOCKS[STATE_BLOCK[st]].get(st, 'lit'));
-      lvl.particles.spawn?.(smoke ? 'smoke' : 'rain', x + d0, y + h, z + d1, 0, 0, 0);
+      if(Math.random() < this.rainParticleDensity)lvl.particles.spawn?.(smoke ? 'smoke' : 'rain', x + d0, y + h, z + d1, 0, 0, 0);
     }
     if (hit && Math.floor(Math.random() * 3) < this.rainSoundTime++) {
       this.rainSoundTime = 0;
@@ -140,7 +143,7 @@ export class AmbientTicker {
     // vanilla ClientLevel.doAnimateTick: the biome's own motes (the Nether's ash and spores), anywhere not a full block
     if (!(FLAGS[st] & F_FULL_COLLISION)) {
       const pt = BIOMES[w.getBiome3(x, y, z)]?.particle;
-      if (pt && r() <= pt.chance) {
+      if (pt && r() <= pt.chance * this.biomeParticleDensity) {
         const [xd, yd, zd] = ambientMotion(pt.type);
         this.level.particles.spawn?.(pt.type, x + r(), y + r(), z + r(), xd, yd, zd);
       }

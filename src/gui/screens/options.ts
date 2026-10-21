@@ -150,8 +150,13 @@ export class VideoSettingsScreen extends OptionsSubScreen {
       if (v) document.documentElement.requestFullscreen?.().catch(() => {});
       else if (document.fullscreenElement) document.exitFullscreen?.();
     });
+    const resolution = new CycleButton<number>(0,0,150,20,'Render Resolution',[0,1080,1440,2160,720],o.renderResolution,
+      v=>v===0?'Native':`${v}p`,v=>{o.renderResolution=v;g.saveOptions();g.resize();});
+    resolution.tooltip='Caps the game resolution, with or without hyperShader. 1080p fits within 1920 x 1080, preserving your window shape. Smaller windows stay at their native resolution.';
     list.addSmall(
+      boolOption(g, 'hyperShader', 'hyperShader', undefined, 'Cinematic water, reflections, soft sunlight, shadows and atmospheric clouds. Higher GPU cost. Applies immediately; block textures stay the same.'),
       graphics,
+      resolution,
       intSlider(g, 'Render Distance', 'renderDistance', 2, 32, (v) => `${v} chunks`, () => g.applyVideoOptions(), 1, true),
       enumOption(g, 'Chunk Builder', 'chunkBuilder', ['Threaded', 'Semi Blocking', 'Fully Blocking']),
       intSlider(g, 'Simulation Distance', 'simulationDistance', 5, 32, (v) => `${v} chunks`, () => g.applyVideoOptions(), 1, true),

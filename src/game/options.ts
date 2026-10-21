@@ -6,11 +6,15 @@ import { KEYS } from './input';
 export interface GameOptions {
   // video
   renderDistance: number;
+  /** 0 native; otherwise fit the drawing buffers inside a 16:9 resolution cap. */
+  renderResolution: number;
   simulationDistance: number;
   fov: number;
   gamma: number;
   bobView: boolean;
   smoothLighting: boolean;
+  /** ProjectStunning cinematic water and lighting. Original renderer when off. */
+  hyperShader: boolean;
   /** 0 fast, 1 fancy, 2 fabulous */
   graphics: number;
   /** derived: graphics >= 1 */
@@ -109,11 +113,13 @@ export const DEFAULT_KEYS: Record<string, string> = { ...KEYS };
 
 export const DEFAULT_OPTIONS: GameOptions = {
   renderDistance: 12,
+  renderResolution: 0,
   simulationDistance: 12,
   fov: 70,
   gamma: 0.5,
   bobView: true,
   smoothLighting: true,
+  hyperShader: false,
   graphics: 1,
   fancy: true,
   guiScale: 0,
@@ -226,6 +232,7 @@ export function loadOptions(): GameOptions {
     o.touchDefaults = 1;
   }
   o.fancy = o.graphics >= 1;
+  if(![0,720,1080,1440,2160].includes(o.renderResolution))o.renderResolution=0;
   applyKeys(o);
   return o;
 }

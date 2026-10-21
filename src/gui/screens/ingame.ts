@@ -2,6 +2,7 @@
 
 import type { Game, ReceivingReason } from '../../game/game';
 import { Screen, Button, EditBox } from '../screen';
+import { hyperShaderToggle } from '../hyperShaderToggle';
 import type { GuiGraphics } from '../guiGraphics';
 import { OptionsScreen } from './options';
 import { ConfirmScreen, GenericMessageScreen } from './menus';
@@ -24,7 +25,7 @@ export class PauseScreen extends Screen {
     const g = this.game;
     // vanilla GridLayout: 2 columns of (98 + 8), padding 4/4/4/0, first row paddingTop 50,
     // aligned at (0.5, 0.25) of the screen
-    const gridW = 212, gridH = 70 + 24 * 4;
+    const gridW = 212, gridH = 70 + 24 * 5;
     const gx = Math.floor((this.width - gridW) * 0.5);
     const gy = Math.floor((this.height - gridH) * 0.25);
     const col = (c: number) => gx + c * 106 + 4;
@@ -44,12 +45,13 @@ export class PauseScreen extends Screen {
         void navigator.clipboard.writeText(link).then(() => (this.copied = 40), () => (copy.active = false));
       }));
     } else this.add(new Button(col(1), row(3), 98, 20, 'Open to LAN', () => g.setScreen(new ShareToLanScreen(g, this)))).active = MULTIPLAYER_ENABLED && g.mode === 'single';
-    this.shareY = row(4) + 28;
+    this.add(hyperShaderToggle(g, col(0), row(4), 204));
+    this.shareY = row(5) + 28;
     // (vanilla: a guest disconnects, back to the Multiplayer screen, with nothing to save; the join code kept there, to
     // join again as vanilla's server list keeps the server)
     const guest = g.mode === 'client';
     const quit = this.add(
-      new Button(col(0), row(4), 204, 20, guest ? 'Disconnect' : 'Save and Quit to Title', () => {
+      new Button(col(0), row(5), 204, 20, guest ? 'Disconnect' : 'Save and Quit to Title', () => {
         quit.active = false;
         if (guest) void g.leaveWorld(new JoinMultiplayerScreen(g, g.titleScreenFactory?.() ?? null, g.joinedWith));
         else void g.quitToTitle(new GenericMessageScreen(g, 'Saving world'));

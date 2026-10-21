@@ -17,6 +17,7 @@ export class LightningBolt extends Entity {
   readonly random = new Rand((Math.random() * 0x7fffffff) | 0);
   /** vanilla life: 2 on the first tick of a flash */
   private life = 2;
+  get flashing(): boolean { return this.life >= 0; }
   /** this flash's shape */
   seed: number;
   private flashes: number;

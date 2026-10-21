@@ -23,6 +23,7 @@ import { OVERWORLD, type DimensionType } from '../world/dimension';
 import { EndRenderer } from './endRenderer';
 // (the beacon)
 import { BeaconRenderer } from './beaconRenderer';
+import { HyperFrame } from './hyperShader';
 
 export interface Camera {
   x: number;
@@ -40,6 +41,9 @@ export interface FrameEnv {
   weather: env.Weather;
   biome: number;
   gamma: number;
+  hyperShader?: boolean;
+  /** Optional owned capture target, used by the title panorama. */
+  outputFramebuffer?: WebGLFramebuffer | null;
   nightVision: number;
   /** blindness fog (effectVisuals.blindnessFog) */
   blindness?: BlindnessFog | null;
@@ -92,12 +96,14 @@ export class Renderer {
   readonly viewRot = mat4();
   readonly viewProj = mat4();
   readonly frustum = new Frustum();
+  private readonly reflectedFrustum = new Frustum();
   renderDistance = 12;
   cloudsEnabled = true;
   skipClouds = false;
   width = 1;
   height = 1;
   lastFog: [number, number, number] = [0, 0, 0];
+  private hyper: HyperFrame | null = null;
 
   constructor(readonly gl: GL, readonly atlas: Atlas, itemTextures: Record<string, () => TexImage> | null, blockImages: Map<string, TexImage>) {
     this.lightmap = new Lightmap(gl);
@@ -111,6 +117,16 @@ export class Renderer {
     this.entities = new EntityRenderDispatcher(gl, this.items, this.hand.skinTexture);
     this.end = new EndRenderer(gl);
     this.beacons = new BeaconRenderer(gl);
+  }
+
+  async prepareHyperShader(): Promise<void> {
+    this.hyper ??= new HyperFrame(this.gl);
+    await this.hyper.assetsReady;
+  }
+
+  releaseHyperShader(): void {
+    this.hyper?.dispose();
+    this.hyper = null;
   }
 
   resize(w: number, h: number): void {
@@ -140,6 +156,23 @@ export class Renderer {
     const biome = BIOMES[e.biome] ?? BIOMES[1];
     const colors = e.biomeColors ?? { fog: env.rgb24(biome.fog), sky: env.rgb24(biome.sky) };
     this.setupCamera(cam, e.bob ?? null);
+    const hyperEnabled = !!e.hyperShader && !e.blindness && !e.darkness && !e.lava && !e.powderSnow;
+    if (!hyperEnabled && this.hyper) { this.hyper.dispose(); this.hyper = null; }
+    const hyper = hyperEnabled ? (this.hyper ??= new HyperFrame(gl)) : null;
+    if (hyper) {
+      hyper.resize(this.width, this.height);
+      hyper.prepare(this.proj, this.view, [cam.x, cam.y, cam.z], tod, (e.ticks + e.partial) / 20, e.weather.rain, this.cloudsEnabled, !!e.underwater, dim.id === 'the_nether' ? 1 : dim.id === 'the_end' ? 2 : 0);
+      hyper.water.update(hyper.dimension===0?biome.name:hyper.water.key,hyper.time,cam.x,cam.z);
+      hyper.brightness=e.gamma;hyper.nightVision=e.nightVision;
+      hyper.flash=dim.hasSkyLight && e.weather.flash>0?1:0;
+      hyper.wetness = dim.id === 'overworld' && biome.precipitation && biome.temperature >= 0.15 ? e.weather.rain : 0;
+      if(e.level && hyper.wetness>0.01)hyper.updateRainExposure(e.level.world);
+      if (e.level) hyper.cameraSky = Math.max(0.05, (e.level.world.getLight(Math.floor(cam.x), Math.floor(cam.y), Math.floor(cam.z)) >> 4) / 15);
+      if (dim.id === 'the_nether') {
+        const max = Math.max(...colors.fog, 0.1);
+        hyper.fogTint = colors.fog.map(c => c / max * 0.20) as [number, number, number];
+      }
+    }
     // look vector
     const pr = cam.pitch * DEG, yr = cam.yaw * DEG;
     const lx = -Math.sin(yr) * Math.cos(pr), ly = -Math.sin(pr), lz = Math.cos(yr) * Math.cos(pr);
@@ -202,9 +235,31 @@ export class Renderer {
       const k = Math.min(1 / fog[0], 1 / fog[1], 1 / fog[2]);
       fog = [fog[0] * (1 - nv) + fog[0] * k * nv, fog[1] * (1 - nv) + fog[1] * k * nv, fog[2] * (1 - nv) + fog[2] * k * nv];
     }
+    if (hyper) {
+      const day = Math.max(0, Math.min(1, (hyper.sun[1] + 0.12) / 0.35));
+      const dusk = 1 - Math.min(1, Math.abs(hyper.sun[1]) * 2.6);
+      fog = e.underwater ? [0.015, 0.20, 0.24] : [0.025 + day * (0.39 + dusk * 0.34), 0.035 + day * (0.50 - dusk * 0.12), 0.065 + day * (0.57 - dusk * 0.32)];
+      fogStart = e.underwater ? 2 : rdBlocks * 0.38;
+      fogEnd = e.underwater ? 64 : rdBlocks;
+      if(hyper.dimension===0 && e.underwater){
+        fog=hyper.water.fog.map(v=>v*0.28) as [number,number,number];
+        fogStart=hyper.water.fogRange[0];fogEnd=hyper.water.fogRange[1];
+      }
+      if (hyper.dimension === 1) {
+        fog = hyper.fogTint; fogStart = 16; fogEnd = Math.min(rdBlocks, 175);
+      } else if (hyper.dimension === 2) {
+        fog = [0.065, 0.034, 0.105]; fogStart = rdBlocks * 0.42; fogEnd = rdBlocks * 1.15;
+      } else if (e.weather.rain > 0) {
+        const rain = e.weather.rain * 0.65;
+        fog = fog.map((c, i) => c * (1 - rain) + [0.24, 0.29, 0.34][i] * rain) as [number, number, number];
+        fogStart *= 1 - e.weather.rain * 0.5;
+      }
+      if (e.worldFog) { fogStart = Math.min(fogStart, 8); fogEnd *= 0.6; }
+    }
     this.lastFog = fog;
     // lightmap
-    this.lightmap.update(env.skyDarken(tod, e.weather), e.weather.flash > 0, e.gamma, e.nightVision, dim.ambientLight, dim.effects.forceBrightLightmap, e.darkness?.gamma ?? 0, e.darkness?.pulse ?? 0, dw);
+    this.lightmap.update(env.skyDarken(tod, e.weather), e.weather.flash > 0, e.gamma, e.nightVision, dim.ambientLight, dim.effects.forceBrightLightmap, e.darkness?.gamma ?? 0, e.darkness?.pulse ?? 0, dw, !!hyper && hyper.dimension === 0);
+    if (hyper) hyper.beginScene();
     // clear to fog color
     gl.viewport(0, 0, this.width, this.height);
     gl.clearColor(fog[0], fog[1], fog[2], 1);
@@ -214,7 +269,10 @@ export class Renderer {
     // vanilla LevelRenderer.renderSky: no sky in lava or while blind or in darkness (doesMobEffectBlockSky), none at all in the Nether
     // ((powder snow) nor in powder snow)
     const skyBlocked = !!blind || !!e.darkness || !!e.powderSnow;
-    if (!e.underwater && !e.lava && !skyBlocked && dim.effects.sky === 'normal') {
+    // The air sky is needed behind the refracting underside as well. Water
+    // absorption is applied at the fluid surface, not baked into a stale map.
+    if (hyper && hyper.dimension!==2) hyper.drawSky();
+    if (!hyper && !e.underwater && !e.lava && !skyBlocked && dim.effects.sky === 'normal') {
       this.sky.render({
         proj: this.proj,
         viewRot: this.viewRot,
@@ -230,7 +288,7 @@ export class Renderer {
       });
     }
     // (vanilla renderEndSky: under water too, not in lava or while blind)
-    if (!e.lava && !skyBlocked && dim.effects.sky === 'end') this.end.renderSky(this.proj, this.viewRot);
+    if (!hyper && !e.lava && !skyBlocked && dim.effects.sky === 'end') this.end.renderSky(this.proj, this.viewRot);
     const tp = {
       proj: this.proj,
       view: this.view,
@@ -244,6 +302,7 @@ export class Renderer {
       atlas: this.atlas.texture!,
       lightmap: this.lightmap.texture,
       frustum: this.frustum,
+      hyper: hyper ?? undefined,
     };
     this.lastFogStart = fogStart;
     this.lastFogEnd = fogEnd;
@@ -252,9 +311,35 @@ export class Renderer {
     // vanilla Lighting.setupNetherLevel: in the Nether entities are lit from above and below
     this.batch.light0 = [0.2, 1.0, -0.7];
     this.batch.light1 = dim.effects.constantAmbientLight ? [-0.2, -1.0, 0.7] : [-0.2, 1.0, 0.7];
-    this.world.cull(tp, rdBlocks);
+    const mainVisible=this.world.cull(tp, rdBlocks);
+    const waterVisible=!!hyper&&this.world.hasVisibleWater(tp);
+    const planarVisible=waterVisible&&hyper!.dimension===0&&this.world.hasVisibleWater(tp,hyper!.reflectY);
+    if (hyper) {
+      hyper.reflectionAvailable=planarVisible;
+      // The Nether has no directional skylight; neither its lighting nor
+      // its biome-coloured volume samples a sun shadow.
+      if(hyper.dimension!==1){
+        hyper.beginShadow();
+        this.world.drawShadow(tp, hyper.lightMatrix, 110);
+      }
+      if (planarVisible) {
+        hyper.beginReflection();
+        hyper.drawSky(true);
+        const reflectedFrustum = this.reflectedFrustum;
+        reflectedFrustum.setFromMatrix(hyper.reflectVP);
+        const reflected = { ...tp, view: hyper.reflectView, frustum: reflectedFrustum };
+        this.world.cull(reflected, rdBlocks);
+        this.world.drawOpaque(reflected);
+        hyper.endReflection();
+      }
+      hyper.beginScene();
+      if(planarVisible)this.world.restoreVisible(mainVisible);
+    }
     this.world.drawOpaque(tp);
-    if (e.level) this.end.renderPortals(e.level.world, cam.x, cam.y, cam.z, this.proj, this.view, this.frustum, EndRenderer.shaderTime(e.level.gameTime, e.partial));
+    // Full-resolution End ray marching only shades unobstructed space.
+    // Keep the exact same integration, planet detail and output resolution.
+    if(hyper?.dimension===2)hyper.drawSky(false,true);
+    if (e.level) this.end.renderPortals(e.level.world, cam.x, cam.y, cam.z, this.proj, this.view, this.frustum, EndRenderer.shaderTime(e.level.gameTime, e.partial), !!hyper);
     if (e.level) this.renderEntities(e.level, cam, e.partial, fog, fogStart, fogEnd, e.entityOptions);
     if (e.level) {
       // (vanilla TheEndGatewayRenderer's beams, with the block entities)
@@ -263,8 +348,16 @@ export class Renderer {
       this.beacons.render(this.batch, e.level.world, e.level.gameTime, cam.x, cam.y, cam.z, this.frustum, e.partial);
       this.batch.flush();
     }
+    if (hyper && (waterVisible || (hyper.wetness>0.01 && !e.underwater))) {
+      hyper.captureOpaque();
+      if(hyper.wetness>0.01 && !e.underwater){
+        this.world.drawOpaque(tp,true);
+        if(waterVisible)hyper.captureOpaque();
+      }
+    }
     this.world.drawTranslucent(tp);
     if (this.particles) {
+      this.particles.subtleNetherAmbient = !!hyper && dim.id === 'the_nether';
       this.batch.proj = this.proj;
       this.batch.view = this.view;
       this.batch.fog = [fogStart, fogEnd];
@@ -278,7 +371,7 @@ export class Renderer {
       this.particles.spriteRects = this.particleAtlas.rects;
       this.particles.renderSprites(this.batch, cam, e.partial);
     }
-    if (this.cloudsEnabled && !e.underwater && !this.skipClouds && !skyBlocked && dim.effects.clouds) {
+    if (!hyper && this.cloudsEnabled && !e.underwater && !this.skipClouds && !skyBlocked && dim.effects.clouds) {
       const cc = env.cloudColor(tod, e.weather);
       this.clouds.render(this.proj, this.view, cam.x, cam.y, cam.z, e.ticks + e.partial, cc, fog, rdBlocks);
     }
@@ -290,9 +383,10 @@ export class Renderer {
       this.batch.lightmap = this.lightmap.texture;
       const gl2 = this.gl;
       gl2.depthMask(false);
-      this.weather.render(this.batch, e.level.world, cam, e.weather.rain, e.ticks, e.partial, this.fancy);
+      this.weather.render(this.batch, e.level.world, cam, e.weather.rain, e.ticks, e.partial, this.fancy, !!hyper);
       gl2.depthMask(true);
     }
+    if (hyper) hyper.finish(e.outputFramebuffer ?? null);
   }
 
   private renderEntities(level: Level, cam: Camera, partial: number, fog: [number, number, number], fogStart: number, fogEnd: number, opts?: EntityRenderOptions): void {

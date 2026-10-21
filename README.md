@@ -1,3 +1,66 @@
+# OpusCraft Realistic Shaders
+
+A graphics-focused fork of [OpusCraft](https://github.com/Oppenheimerism/OpusCraft), adding **hyperShader**: reflective water, warmer lighting, atmospheric weather, and distinct looks for the Overworld, Nether, and End. The original block textures and voxel geometry remain.
+
+## Screenshots
+
+![Title screen with hyperShader enabled](screenshots/0.png)
+
+![Clear shallow water, shoreline reflections, and a Nether portal](screenshots/1.png)
+
+![Sunset lighting and forest reflections on the water](screenshots/2.png)
+
+![Golden sunlight over a cherry grove](screenshots/3.png)
+
+![Nether atmosphere and glowing lava falls](screenshots/4.webp)
+
+![Lava-lit Nether landscape and striders](screenshots/5.png)
+
+![The End with violet atmosphere, a ringed planet, and a black hole](screenshots/6.webp)
+
+## What hyperShader adds
+
+- **Water:** biome-aware absorption and turquoise in-scattering, depth-scaled refraction, Fresnel reflections, animated ripples, filtered sun glints, and subtle moving caustics on submerged surfaces. A shallow contact border follows the blocks at the shoreline.
+- **Underwater:** depth tinting, softer filled shadows, and a live refracting water surface with total internal reflection. Aquatic plants retain their pixel texture and sway at their tips.
+- **Overworld lighting:** warm sunlight and torchlight, cool sky fill, soft directional shadows, richer material colours, golden sunrise and sunset, sparse fair-weather clouds, bloom, and light volumetric atmosphere.
+- **Rain and storms:** sparse rain falling through the 3D world, roof-aware wet surfaces and puddle reflections, visible lightning, and flashes that illuminate the sky and terrain.
+- **Nether:** biome-coloured atmospheric depth, lava glow, restrained ambient particles, and subtle heat shimmer.
+- **End:** a shader-rendered black hole and accretion disk, a shaded ringed planet, stars, violet lighting and haze, and more vivid portals. Turning hyperShader off restores the ordinary End sky.
+- **Stable motion and foliage:** continuous wave and caustic phases through biome changes, improved distant cutout filtering, and grass that casts shadows onto the ground without dark self-shadowing on its blades.
+
+## Turn it on or off
+
+Use **hyperShader: ON / OFF** at the bottom of the title menu, in the in-world pause menu, or in **Options → Video Settings**. The choice is saved, applies to ordinary new and existing worlds, and also changes the title-screen panorama.
+
+Resolution uses the game's shared **Render Resolution** setting in Video Settings. Adjust that and render distance to suit your GPU; there is no separate shader-only resolution control. To try a thunderstorm in a world with commands enabled, use `/weather thunder`.
+
+## Run this fork locally
+
+Requires Node.js 22 or newer.
+
+```sh
+git clone https://github.com/mahostar/OpusCraft-Realistic-Shaders.git
+cd OpusCraft-Realistic-Shaders
+npm ci
+npm run dev
+```
+
+Open the local URL printed by Vite. For a production build, run `npm run build`; `npm run preview` serves that build locally.
+
+## Implementation and credits
+
+hyperShader is integrated into the game's **WebGL 2 renderer**. It uses raster shadow maps, live planar reflections for sea-level water, screen-space reflection fallbacks, depth-aware compositing, volumetric integration, and bloom. It does **not** require or implement hardware RTX ray tracing, and it is not an Iris/OptiFine or Bedrock shader-pack loader.
+
+Dimension-specific shader programs, half-resolution reflection/atmosphere passes, cached wet-surface geometry, baked caustic animation, and filtered wave detail keep the effects practical. Performance still depends on the world, browser, resolution, and render distance. See [the implementation notes](HYPERSHADER.md) for technical details, test results, and current limits.
+
+The original game is by [Oppenheimerism](https://github.com/Oppenheimerism/OpusCraft). Shader and asset sources are credited in [licenses/](licenses/), including [Photon](licenses/PHOTON-LICENSE.txt), [IterationT](licenses/ITERATIONT-PROVENANCE.md), the [Cromos water adaptation](licenses/CROMOS-PROVENANCE.md), and [Solar System Scope's Saturn texture](licenses/SPACE-TEXTURES.md).
+
+---
+
+## Original OpusCraft README
+
+The upstream README is preserved in full below. Its original play link points to the upstream game; use the instructions above to run this shader fork. Its description of procedural-only assets describes the original project; this fork also includes the credited shader assets listed above.
+
 # OpusCraft
 
 Minecraft Java Edition 1.21, rebuilt from scratch for the browser by Claude Opus 5.5.

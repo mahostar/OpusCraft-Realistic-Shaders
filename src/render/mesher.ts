@@ -11,6 +11,7 @@ import { BakedModel, BakedQuad, bakeVariant, SpriteLookup, SpriteRect, Variant, 
 import { mcPosSeed, hash3 } from '../core/rng';
 import { MIN_Y } from '../world/constants';
 import { redstoneColor } from '../world/redstoneColor';
+import { terrainMaterial } from './materialTags';
 
 export const PAD = 2;
 export const PS = 16 + PAD * 2; // 20
@@ -344,7 +345,8 @@ function emitQuad(
     const l = EMISSIVE[inp.blocks[selfIdx]] ? FULL_BRIGHT : flatLight(li);
     const sky = (l >> 8) & 0xff, blk = l & 0xff;
     for (let k = 0; k < 4; k++) {
-      w.vertex(x + ox + pos[k * 3], y + oy + pos[k * 3 + 1], z + oz + pos[k * 3 + 2], uv[k * 2], uv[k * 2 + 1], r * shade, g * shade, b * shade, alpha, blk, sky);
+      const vertexAlpha=alpha===246 && pos[k*3+1]<0.5?245:alpha;
+      w.vertex(x + ox + pos[k * 3], y + oy + pos[k * 3 + 1], z + oz + pos[k * 3 + 2], uv[k * 2], uv[k * 2 + 1], r * shade, g * shade, b * shade, vertexAlpha, blk, sky);
     }
   }
   if (w.centers) {
@@ -475,7 +477,10 @@ function renderFluid(x: number, y: number, z: number, ox: number, oy: number, oz
   }
   const X = x + ox, Y = y + oy, Z = z + oz;
   const yDown = renderDown ? 0.001 : 0;
-  const alpha = 255;
+  // Material tag in vertex alpha (the texture still supplies actual opacity).
+  // 254 is water and 253 is lava; shaders restore their vertex opacity to 1.
+  // This survives worker transfers without growing every terrain vertex.
+  const alpha = lava ? 253 : 254;
   // vanilla: max of the fluid block's light and the light above it
   const lA = lightPacked(self), lB = lightPacked(pidx(x, y + 1, z));
   const skyS = Math.max((lA >> 8) & 0xff, (lB >> 8) & 0xff), blkS = Math.max(lA & 0xff, lB & 0xff);
@@ -600,11 +605,15 @@ export function meshSection(input: MeshInput): MeshOutput {
         const drawModel = (m: BakedModel) => {
           const ao = useAO && m.ao;
           for (const q of m.quads) {
+            let waterContact = !!(f & F_WATER);
             if (q.cull >= 0) {
               const n = blocks[pidx(x + DX[q.cull], y + DY[q.cull], z + DZ[q.cull])];
               if (occludes(st, n, q.cull)) continue;
+              waterContact ||= !!(FLAGS[n] & F_WATER);
             }
-            emitQuad(w, q, x, y, z, ox, oy, oz, tint, ao, 255, i);
+            const thinPlant = !!(f & F_LEAVES) || (!m.ao && !q.shade && q.cull < 0);
+            const material = terrainMaterial(b.name, b.tint === 'grass' && q.tint >= 0, thinPlant,waterContact);
+            emitQuad(w, q, x, y, z, ox, oy, oz, tint, ao, material, i);
           }
         };
         if (models.randomParts) {

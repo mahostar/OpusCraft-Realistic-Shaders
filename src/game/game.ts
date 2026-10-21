@@ -43,6 +43,7 @@ import { SoundManager } from '../audio/soundManager';
 import { Panorama } from '../render/panorama';
 import { timeOfDay, skyDarkenInt, blendBiomeColors } from '../render/environment';
 import { GameOptions, loadOptions, saveOptions } from './options';
+import { renderSize } from '../render/resolution';
 import { DEFAULT_GAME_RULES } from './gameRules';
 import { ItemEntity } from '../entity/itemEntity';
 import { ExperienceOrb } from '../entity/xpOrb';
@@ -322,8 +323,9 @@ export class Game {
 
   resize(): void {
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.floor(window.innerWidth * dpr);
-    this.canvas.height = Math.floor(window.innerHeight * dpr);
+    const [width,height]=renderSize(window.innerWidth*dpr,window.innerHeight*dpr,this.opts.renderResolution);
+    this.canvas.width = width;
+    this.canvas.height = height;
     this.ui.width = this.canvas.width;
     this.ui.height = this.canvas.height;
     this.renderer?.resize(this.canvas.width, this.canvas.height);
@@ -450,7 +452,7 @@ export class Game {
   // the touch controls' (game/touch.ts TouchHost)
 
   cssPx(): number {
-    return (window.devicePixelRatio || 1) / this.gui.scale;
+    return (this.canvas.width / Math.max(1,window.innerWidth)) / this.gui.scale;
   }
 
   /** (a guest's clicks are the host's to act on, at what the guest looks at: so with the crosshair) */
@@ -1545,6 +1547,10 @@ export class Game {
     }
     // (the host's ambience is its own: its torches' smoke isn't sent to the guests, who make their own)
     const ambient = () => {
+      if (this.ambient) {
+        this.ambient.biomeParticleDensity = this.opts.hyperShader && this.world.dim.id === 'the_nether' ? 0.12 : 1;
+        this.ambient.rainParticleDensity = this.opts.hyperShader ? 0.10 : 1;
+      }
       this.ambient?.tick(p.x, p.y, p.z);
       this.ambient?.tickRain(p.x, p.y + p.eyeHeight, p.z, this.opts.graphics >= 1);
     };
@@ -1737,6 +1743,7 @@ export class Game {
       weather: { rain: this.level.rainLevel(partial), thunder: this.level.thunderLevel(partial), flash: this.level.skyFlash },
       biome,
       gamma: this.opts.gamma,
+      hyperShader: this.opts.hyperShader,
       nightVision: nightVisionScale(p, partial),
       blindness: blindnessFog(p, Math.max(this.opts.renderDistance * 16, 32)),
       darkness: darknessVisuals(p, partial, this.opts.darknessEffectScale),

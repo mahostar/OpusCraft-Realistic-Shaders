@@ -2,6 +2,7 @@
 // message screens (vanilla 1.21 layouts and strings).
 
 import type { Game } from '../../game/game';
+import { hyperShaderToggle } from '../hyperShaderToggle';
 import { Screen, Button, CycleButton, EditBox, IconButton, playClick } from '../screen';
 import { ScrollList } from '../list';
 import type { GuiGraphics } from '../guiGraphics';
@@ -79,7 +80,7 @@ export class TitleScreen extends Screen {
   init(): void {
     const g = this.game;
     const cx = Math.floor(this.width / 2);
-    const l = Math.floor(this.height / 4) + 48;
+    const l = Math.min(Math.floor(this.height / 4) + 48, this.height - 144);
     this.add(new Button(cx - 100, l, 200, 20, 'Singleplayer', () => g.setScreen(afterTouchNotice(g, this, () => new SelectWorldScreen(g, this)))));
     // (multiplayer/ switched off, the button stays greyed out, as it was)
     this.add(new Button(cx - 100, l + 24, 200, 20, 'Multiplayer', () => g.setScreen(afterTouchNotice(g, this, () => new JoinMultiplayerScreen(g, this))))).active = MULTIPLAYER_ENABLED;
@@ -89,6 +90,7 @@ export class TitleScreen extends Screen {
     this.add(new Button(cx - 100, l + 84, 98, 20, 'Options...', () => g.setScreen(new OptionsScreen(g, this))));
     this.add(new Button(cx + 2, l + 84, 98, 20, 'Quit Game', () => quitGame()));
     this.add(new IconButton(cx + 104, l + 84, 'icon_accessibility', () => g.setScreen(new AccessibilityOptionsScreen(g, this)), 'Accessibility Settings...'));
+    this.add(hyperShaderToggle(g, cx - 100, l + 108, 200));
   }
 
   override isPauseScreen(): boolean {

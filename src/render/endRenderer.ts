@@ -1,8 +1,7 @@
 // The End's own render paths.
 //
-// The sky (vanilla LevelRenderer.renderEndSky): no sun, moon, stars or clouds,
-// just a box of grey static round the camera, 100 blocks out each way, its
-// texture repeated 16 times across each face and tinted 0x282828.
+// Shader-OFF sky: an inexpensive, world-anchored starfield. The original
+// tiled static cube looked like nearby walls when hyperShader was disabled.
 //
 // The end portal (vanilla TheEndPortalRenderer, RenderType.endPortal and the
 // rendertype_end_portal shader): only the portal's top (at 0.75) and bottom (at
@@ -35,20 +34,25 @@ layout(location=0) in vec3 a_pos;
 layout(location=1) in vec2 a_uv;
 uniform mat4 u_proj;
 uniform mat4 u_view;
-out vec2 v_uv;
+out vec3 v_direction;
 void main() {
   gl_Position = u_proj * u_view * vec4(a_pos, 1.0);
-  v_uv = a_uv;
+  v_direction = a_pos;
 }`;
 
 const SKY_FS = `#version 300 es
 precision highp float;
-uniform sampler2D u_tex;
-in vec2 v_uv;
+in vec3 v_direction;
 out vec4 o;
 void main() {
-  // (vanilla colour -14145496: 0xFF282828)
-  o = vec4(texture(u_tex, v_uv).rgb * (40.0 / 255.0), 1.0);
+  // Direction-based cells join across cube faces without tiled walls or a
+  // finite-distance appearance. No hyperShader assets, fog or ray marcher.
+  vec3 p=normalize(v_direction)*240.0,i=floor(p),f=fract(p)-0.5;
+  vec3 h=fract(i*vec3(443.897,441.423,437.195));h+=dot(h,h.yzx+19.19);
+  vec2 seed=fract((h.xx+h.yz)*h.zy);
+  float star=smoothstep(0.990,1.0,seed.x)*exp(-dot(f,f)*22.0);
+  vec3 c=vec3(0.004,0.003,0.009)+mix(vec3(0.74,0.82,1.0),vec3(1.0,0.86,0.65),seed.y)*star;
+  o=vec4(c,1.0);
 }`;
 
 /** vanilla rendertype_end_portal.fsh COLORS */
@@ -103,13 +107,21 @@ export function portalFragmentShader(layers = PORTAL_LAYERS): string {
 precision highp float;
 uniform sampler2D u_sky;
 uniform sampler2D u_portal;
-uniform float u_time;
+uniform float u_time,u_vivid;
 in vec4 v_proj;
 out vec4 o;
 void main() {
   vec2 uv = v_proj.xy / v_proj.w;
   vec3 c = texture(u_sky, uv).rgb * ${vec3(COLORS[0])};
 ${lines.join('\n')}
+  if(u_vivid>0.5){
+    // Keep the layered star parallax, restore chroma and let bright flecks
+    // feed the HDR bloom instead of lifting the whole portal to pale grey.
+    float luminance=dot(c,vec3(0.2126,0.7152,0.0722));
+    c=max(vec3(0.0),mix(vec3(luminance),c,1.65));
+    c=c*1.6+pow(c,vec3(2.0))*vec3(0.25,1.2,1.8)*3.0;
+    c+=vec3(0.008,0.003,0.025);
+  }
   o = vec4(c, 1.0);
 }`;
 }
@@ -214,7 +226,7 @@ export class EndRenderer {
     return vao;
   }
 
-  /** vanilla renderEndSky: drawn first, behind everything, without writing depth */
+  /** Cheap unshaded space, behind everything, without writing depth. */
   renderSky(proj: Mat4, viewRot: Mat4): void {
     const gl = this.gl;
     gl.disable(gl.DEPTH_TEST);
@@ -244,7 +256,7 @@ export class EndRenderer {
    * every end portal within 64 blocks and in view (its top and bottom) and every end gateway within 256 (the faces
    * of it that show): opaque, depth-tested, in camera-relative space
    */
-  renderPortals(world: World, camX: number, camY: number, camZ: number, proj: Mat4, view: Mat4, frustum: Frustum, time: number): void {
+  renderPortals(world: World, camX: number, camY: number, camZ: number, proj: Mat4, view: Mat4, frustum: Frustum, time: number, vivid=false): void {
     const portals = this.collect(world, camX, camY, camZ, frustum, false, 0);
     const gateways = this.collect(world, camX, camY, camZ, frustum, true, portals);
     const n = portals + gateways;
@@ -261,8 +273,8 @@ export class EndRenderer {
     gl.depthMask(true);
     gl.enable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
-    if (portals) this.draw(this.portalShader, this.portalVao, proj, view, time, 0, portals * 6);
-    if (gateways) this.draw(this.gatewayShader, this.portalVao, proj, view, time, portals * 6, gateways * 6);
+    if (portals) this.draw(this.portalShader, this.portalVao, proj, view, time, 0, portals * 6, vivid);
+    if (gateways) this.draw(this.gatewayShader, this.portalVao, proj, view, time, portals * 6, gateways * 6, vivid);
   }
 
   /** the faces to draw of the end portals (or gateways), as triangles into verts after the first `from` faces; how many */
@@ -395,12 +407,12 @@ export class EndRenderer {
     gl.enable(gl.CULL_FACE);
   }
 
-  private draw(shader: Shader, vao: WebGLVertexArrayObject, proj: Mat4 | Float32Array, view: Mat4 | Float32Array, time: number, first: number, count: number): void {
+  private draw(shader: Shader, vao: WebGLVertexArrayObject, proj: Mat4 | Float32Array, view: Mat4 | Float32Array, time: number, first: number, count: number, vivid=false): void {
     const gl = this.gl;
     const s = shader.use();
     s.mat4('u_proj', proj as Float32Array);
     s.mat4('u_view', view as Float32Array);
-    s.f('u_time', time);
+    s.f('u_time', time);s.f('u_vivid',vivid?1:0);
     s.i('u_sky', 0);
     s.i('u_portal', 1);
     gl.activeTexture(gl.TEXTURE1);

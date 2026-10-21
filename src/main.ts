@@ -6,6 +6,7 @@ import { TitleScreen, newWorldMeta, afterTouchNotice } from './gui/screens/menus
 import { openToLanOnceSpawned, joinFirstLanWorld, guestModeParam, JoinMultiplayerScreen } from './gui/screens/multiplayer';
 import { MULTIPLAYER_ENABLED } from './net/config';
 import { getWorldMeta } from './storage/worldStore';
+import { startStunningCoast } from './game/stunningCoast';
 
 const params = new URLSearchParams(location.search);
 /**
@@ -27,7 +28,10 @@ async function main(): Promise<void> {
   installScreens(game);
   (window as unknown as Record<string, unknown>).__game = game;
   if (lag) game.netLag = { min: +lag[1], max: Math.max(+lag[1], +lag[2]) };
-  if (params.has('seed') || params.has('quick')) {
+  if (params.has('showcase')) {
+    if (params.has('rd')) game.opts.renderDistance = Math.max(2, Math.min(32, +params.get('rd')! || 8));
+    await startStunningCoast(game);
+  } else if (params.has('seed') || params.has('quick')) {
     // developer quick-start: throwaway world that is never saved
     const mode = params.get('mode') ?? 'survival';
     const meta = newWorldMeta('__quick', 'Quick Test', params.get('seed') ?? 'test', mode, 'normal', false, true);

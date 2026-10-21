@@ -6,8 +6,11 @@ import { rainTexture, snowTexture } from '../textures/env';
 import type { World } from '../world/world';
 import type { Camera } from './renderer';
 import { BIOMES } from '../world/gen/biomes';
+import { DepthRain } from './depthRain';
 
 export class WeatherRenderer {
+  readonly depthRain: DepthRain;
+  visibleColumns=0;
   private readonly rainTex: WebGLTexture;
   private readonly snowTex: WebGLTexture;
   private readonly rainSizeX = new Float32Array(1024);
@@ -16,6 +19,7 @@ export class WeatherRenderer {
   tempAt: ((biome: number, x: number, y: number, z: number) => number) | null = null;
 
   constructor(gl: GL) {
+    this.depthRain=new DepthRain(gl);
     const r = rainTexture();
     this.rainTex = createTexture(gl, r.w, r.h, new Uint8Array(r.data.buffer), { clamp: false });
     const s = snowTexture();
@@ -24,13 +28,15 @@ export class WeatherRenderer {
       for (let j = 0; j < 32; j++) {
         const f = j - 16, f1 = i - 16;
         const f2 = Math.sqrt(f * f + f1 * f1);
-        this.rainSizeX[(i << 5) | j] = -f1 / f2;
-        this.rainSizeZ[(i << 5) | j] = f / f2;
+        this.rainSizeX[(i << 5) | j] = f2 > 0 ? -f1 / f2 : 0.7071;
+        this.rainSizeZ[(i << 5) | j] = f2 > 0 ? f / f2 : 0.7071;
       }
   }
 
-  render(batch: EntityBatch, world: World, cam: Camera, rain: number, ticks: number, partial: number, fancy: boolean): void {
+  render(batch: EntityBatch, world: World, cam: Camera, rain: number, ticks: number, partial: number, fancy: boolean, subtle=false): void {
+    this.visibleColumns=0;this.depthRain.visibleDrops=0;
     if (rain <= 0) return;
+    if(subtle)this.depthRain.render(batch,world,cam,rain,ticks,partial,this.tempAt);
     const cx = Math.floor(cam.x), cy = Math.floor(cam.y), cz = Math.floor(cam.z);
     const radius = fancy ? 10 : 5;
     const camY = cam.y;
@@ -43,6 +49,7 @@ export class WeatherRenderer {
       };
     };
     for (const mode of ['rain', 'snow'] as const) {
+      if(subtle && mode==='rain')continue;
       let any = false;
       for (let z = cz - radius; z <= cz + radius; z++)
         for (let x = cx - radius; x <= cx + radius; x++) {
@@ -61,6 +68,9 @@ export class WeatherRenderer {
           const temp = this.tempAt ? this.tempAt(biome, x, y0, z) : b.temperature;
           const isSnow = temp < 0.15;
           if ((mode === 'snow') !== isSnow) continue;
+          // Stable spatial thinning: no frame-to-frame popping or dense curtains.
+          if(subtle && rnd(Math.imul(x,73856093)^Math.imul(z,19349663))() > (isSnow?0.34:0.20))continue;
+          this.visibleColumns++;
           if (!any) {
             batch.begin({ texture: mode === 'rain' ? this.rainTex : this.snowTex, cutoff: 0.01, blend: true, cull: false, lit: false, useLightmap: true });
             any = true;
@@ -92,11 +102,14 @@ export class WeatherRenderer {
           }
           const X = x + 0.5 - cam.x, Z = z + 0.5 - cam.z;
           const Y0 = y0 - camY, Y1 = y1 - camY;
+          const wind=subtle && !isSnow?0.12+Math.sin(ticks*0.003)*0.035:0;
+          const width=subtle && !isSnow?0.55:1;
+          if(subtle)alpha*=isSnow?0.65:0.55;
           const q = [
-            [X - sx, Y1, Z - sz, u0, v0],
-            [X + sx, Y1, Z + sz, u1, v0],
-            [X + sx, Y0, Z + sz, u1, v1],
-            [X - sx, Y0, Z - sz, u0, v1],
+            [X - sx*width+wind*(Y1-Y0), Y1, Z - sz*width+wind*0.25*(Y1-Y0), u0, v0],
+            [X + sx*width+wind*(Y1-Y0), Y1, Z + sz*width+wind*0.25*(Y1-Y0), u1, v0],
+            [X + sx*width, Y0, Z + sz*width, u1, v1],
+            [X - sx*width, Y0, Z - sz*width, u0, v1],
           ];
           for (const k of [0, 1, 2, 0, 2, 3]) batch.vertexRaw(q[k][0], q[k][1], q[k][2], q[k][3], q[k][4], 1, 1, 1, alpha, 0, 1, 0);
         }

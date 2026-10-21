@@ -45,7 +45,7 @@ export class Lightmap {
    * @param darkenWorld (the wither) vanilla GameRenderer.getDarkenWorldAmount: how far each colour goes toward
    * itself times (0.7, 0.6, 0.6), darker and redder (not under a forced bright lightmap)
    */
-  update(skyDarken: number, flash: boolean, gamma: number, nightVision: number, ambient = 0, forceBright = false, darkGamma = 0, darkPulse = 0, darkenWorld = 0): void {
+  update(skyDarken: number, flash: boolean, gamma: number, nightVision: number, ambient = 0, forceBright = false, darkGamma = 0, darkPulse = 0, darkenWorld = 0, warmBlockLight = false): void {
     const f1 = flash ? 1 : skyDarken * 0.95 + 0.05;
     // skyVec = (f, f, 1) lerp (1,1,1) 0.35
     const sv0 = skyDarken + (1 - skyDarken) * 0.35;
@@ -103,6 +103,14 @@ export class Lightmap {
         r += (0.75 - r) * 0.04;
         g += (0.75 - g) * 0.04;
         b += (0.75 - b) * 0.04;
+        // Entity/hand lighting shares the same warm fire response as terrain.
+        // Apply after gamma, which otherwise pushes strong block light white.
+        // Skylight and the original renderer retain their existing colours.
+        if (warmBlockLight) {
+          const dominance = br / (br + skyB + 0.02) * (1 - nightVision);
+          g *= 1 - dominance * 0.24;
+          b *= 1 - dominance * 0.68;
+        }
         const o = (i * 16 + j) * 4;
         d[o] = Math.min(255, Math.max(0, r * 255));
         d[o + 1] = Math.min(255, Math.max(0, g * 255));

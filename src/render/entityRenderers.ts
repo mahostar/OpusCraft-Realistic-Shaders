@@ -467,9 +467,10 @@ export class EntityRenderDispatcher {
       const dx = x - cam.x, dy = y - cam.y, dz = z - cam.z;
       const d2 = dx * dx + dy * dy + dz * dz;
       if (e instanceof LightningBolt) {
-        // vanilla LightningBolt: never frustum culled (noCulling), but drawn only within 64 blocks
-        const md = 64 * opts.distanceScale;
-        if (d2 < md * md) this.renderLightning(b, e, dx, dy, dz);
+        // Lightning reaches high above its origin: use the visible weather
+        // range, and leave the short gaps between its repeated flashes dark.
+        const md = Math.max(64,b.fog[1]*1.1) * opts.distanceScale;
+        if (e.flashing && dx*dx+dz*dz < md * md) this.renderLightning(b, e, dx, dy, dz);
         continue;
       }
       const bb = e.bb;
@@ -1396,7 +1397,7 @@ export class EntityRenderDispatcher {
   private renderLightning(b: EntityBatch, e: LightningBolt, dx: number, dy: number, dz: number): void {
     this.whiteTex ??= createTexture(this.gl, 1, 1, new Uint8Array([255, 255, 255, 255]));
     b.setOverlay(0, 0, 0, 0);
-    b.begin({ texture: this.whiteTex, cutoff: -1, blend: true, additive: true, cull: true, lit: false, useLightmap: false });
+    b.begin({ texture: this.whiteTex, cutoff: -1, blend: true, additive: true, depthWrite: false, cull: true, lit: false, useLightmap: false });
     const xs = new Float32Array(8), zs = new Float32Array(8);
     let fx = 0, fz = 0;
     const r0 = new Rand(e.seed);
@@ -1407,7 +1408,7 @@ export class EntityRenderDispatcher {
       fz += r0.nextInt(11) - 5;
     }
     // (vanilla blends SRC_ALPHA, ONE: colour 0.45, 0.45, 0.5 at alpha 0.3)
-    const cr = 0.45 * 0.3, cg = 0.45 * 0.3, cb = 0.5 * 0.3;
+    let cr=0, cg=0, cb=0;
     const quad = (x1: number, z1: number, j: number, x2: number, z2: number, o1: number, o2: number, e1: boolean, s1: boolean, e2: boolean, s2: boolean) => {
       const y0 = dy + j * 16, y1 = dy + (j + 1) * 16;
       const v = [
@@ -1419,6 +1420,9 @@ export class EntityRenderDispatcher {
       for (const k of [0, 1, 2, 0, 2, 3]) b.vertexRaw(v[k * 3], v[k * 3 + 1], v[k * 3 + 2], 0, 0, cr, cg, cb, 0.3, 0, 1, 0);
     };
     for (let j = 0; j < 4; j++) {
+      // Narrow white-hot core and a soft blue envelope; HDR bloom remains
+      // Gaussian, and no screen-space bolt sprite is involved.
+      cr=j===0?1.35:0.065;cg=j===0?1.48:0.10;cb=j===0?1.70:0.19;
       const r1 = new Rand(e.seed);
       for (let k = 0; k < 3; k++) {
         const top = k > 0 ? 7 - k : 7;

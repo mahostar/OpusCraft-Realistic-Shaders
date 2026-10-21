@@ -3,6 +3,7 @@
 import { GL, Shader, QuadIndexBuffer } from './gl';
 import { Frustum, Mat4 } from '../core/math';
 import { MIN_Y } from '../world/constants';
+import { HYPER_TERRAIN_VS, HYPER_TERRAIN_FS, SHADOW_VS, SHADOW_FS, specializeHyperShader, type HyperFrame } from './hyperShader';
 
 export const TERRAIN_VS = `#version 300 es
 layout(location=0) in vec3 a_pos;
@@ -22,6 +23,7 @@ void main() {
   gl_Position = u_proj * u_view * vec4(p, 1.0);
   v_uv = a_uv;
   v_color = a_color;
+  if (a_color.a > 0.959 && a_color.a < 0.998) v_color.a = 1.0;
   v_lm = clamp(a_light / 256.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0));
   v_dist = u_fogShape > 0.5 ? max(length(p.xz), abs(p.y)) : length(p);
 }`;
@@ -53,10 +55,15 @@ export class SectionMesh {
   readonly vao: (WebGLVertexArrayObject | null)[] = [null, null, null, null];
   readonly vbo: (WebGLBuffer | null)[] = [null, null, null, null];
   readonly quads = [0, 0, 0, 0];
+  readonly wetVao: (WebGLVertexArrayObject | null)[] = [null, null, null];
+  readonly wetEbo: (WebGLBuffer | null)[] = [null, null, null];
+  readonly wetQuads = [0, 0, 0];
   centers: Float32Array | null = null;
   sortEbo: WebGLBuffer | null = null;
   sortedFrom: [number, number, number] | null = null;
   bytes = 0;
+  /** Local bounds of actual water vertices, used to schedule reflection work. */
+  waterBounds: Float32Array | null = null;
   constructor(readonly cx: number, readonly si: number, readonly cz: number) {}
   get x0(): number {
     return this.cx * 16;
@@ -90,18 +97,65 @@ export interface TerrainParams {
   atlas: WebGLTexture;
   lightmap: WebGLTexture;
   frustum: Frustum;
+  hyper?: HyperFrame;
 }
 
 export class WorldRenderer {
   readonly meshes = new Map<number, SectionMesh>();
   readonly shader: Shader;
+  private readonly hyperShaders = new Map<string, Shader>();
+  private shadowShader: Shader | null = null;
+  private solidShadowShader: Shader | null = null;
   private readonly indices: QuadIndexBuffer;
   private visible: SectionMesh[] = [];
+  private readonly shadowFrustum = new Frustum();
+  private readonly shadowCasters: SectionMesh[] = [];
   stats = { sections: 0, drawn: 0, quads: 0, bytes: 0 };
 
   constructor(private readonly gl: GL) {
     this.shader = new Shader(gl, TERRAIN_VS, TERRAIN_FS, 'terrain');
     this.indices = new QuadIndexBuffer(gl, 65536);
+  }
+
+  private clearWetLayer(m:SectionMesh,layer:number):void{
+    this.gl.deleteVertexArray(m.wetVao[layer]);
+    this.gl.deleteBuffer(m.wetEbo[layer]);
+    m.wetVao[layer]=null;m.wetEbo[layer]=null;m.wetQuads[layer]=0;
+  }
+
+  /** Rain coats only upward solid faces; reuse their original vertices and
+   * index them once at upload, rather than resubmitting walls and plants. */
+  private uploadWetLayer(m:SectionMesh,layer:number,data:ArrayBuffer):number{
+    const positions=new Uint16Array(data),bytes=new Uint8Array(data);
+    const indices=new Uint32Array(m.quads[layer]*6);
+    let count=0;
+    for(let quad=0;quad<m.quads[layer];quad++){
+      const base=quad*32;
+      const tag=bytes[quad*64+15];
+      if((tag>=245 && tag<=249) || tag===252 || tag===253)continue;
+      const ax=positions[base+8]-positions[base],ay=positions[base+9]-positions[base+1],az=positions[base+10]-positions[base+2];
+      const bx=positions[base+16]-positions[base],by=positions[base+17]-positions[base+1],bz=positions[base+18]-positions[base+2];
+      const nx=ay*bz-az*by,ny=az*bx-ax*bz,nz=ax*by-ay*bx;
+      if(ny<=0 || ny*ny<0.81*(nx*nx+ny*ny+nz*nz))continue;
+      const vertex=quad*4;
+      indices[count++]=vertex;indices[count++]=vertex+1;indices[count++]=vertex+2;
+      indices[count++]=vertex;indices[count++]=vertex+2;indices[count++]=vertex+3;
+    }
+    if(!count){this.clearWetLayer(m,layer);return 0;}
+    const gl=this.gl;
+    if(!m.wetVao[layer]){
+      m.wetVao[layer]=gl.createVertexArray();m.wetEbo[layer]=gl.createBuffer();
+      gl.bindVertexArray(m.wetVao[layer]);gl.bindBuffer(gl.ARRAY_BUFFER,m.vbo[layer]);
+      gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.UNSIGNED_SHORT,false,16,0);
+      gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,2,gl.UNSIGNED_BYTE,false,16,6);
+      gl.enableVertexAttribArray(2);gl.vertexAttribPointer(2,2,gl.UNSIGNED_SHORT,true,16,8);
+      gl.enableVertexAttribArray(3);gl.vertexAttribPointer(3,4,gl.UNSIGNED_BYTE,true,16,12);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,m.wetEbo[layer]);
+    }
+    gl.bindBuffer(gl.COPY_WRITE_BUFFER,m.wetEbo[layer]);
+    gl.bufferData(gl.COPY_WRITE_BUFFER,indices.subarray(0,count),gl.STATIC_DRAW);
+    m.wetQuads[layer]=count/6;
+    return count*4;
   }
 
   upload(cx: number, si: number, cz: number, layers: (ArrayBuffer | null)[], quads: number[], centers: Float32Array | null): void {
@@ -118,10 +172,12 @@ export class WorldRenderer {
       this.meshes.set(key, m);
     }
     m.bytes = 0;
+    m.waterBounds = null;
     for (let l = 0; l < 4; l++) {
       const data = layers[l];
       m.quads[l] = quads[l];
       if (!data || quads[l] === 0) {
+        if(l<3)this.clearWetLayer(m,l);
         if (m.vbo[l]) {
           gl.deleteBuffer(m.vbo[l]);
           gl.deleteVertexArray(m.vao[l]);
@@ -153,6 +209,18 @@ export class WorldRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, m.vbo[l]);
       gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
       m.bytes += data.byteLength;
+      if(l<3)m.bytes+=this.uploadWetLayer(m,l,data);
+      if(l===3){
+        const bytes=new Uint8Array(data),positions=new Uint16Array(data);
+        let bounds:Float32Array|null=null;
+        for(let i=0;i<bytes.length;i+=16){
+          if(bytes[i+15]!==254)continue;
+          const x=positions[i/2]/2048-8,y=positions[i/2+1]/2048-8,z=positions[i/2+2]/2048-8;
+          if(!bounds)bounds=new Float32Array([x,y,z,x,y,z]);
+          else{bounds[0]=Math.min(bounds[0],x);bounds[1]=Math.min(bounds[1],y);bounds[2]=Math.min(bounds[2],z);bounds[3]=Math.max(bounds[3],x);bounds[4]=Math.max(bounds[4],y);bounds[5]=Math.max(bounds[5],z);}
+        }
+        m.waterBounds=bounds;
+      }
     }
     gl.bindVertexArray(null);
     m.centers = centers;
@@ -168,6 +236,7 @@ export class WorldRenderer {
     if (!m) return;
     const gl = this.gl;
     for (let l = 0; l < 4; l++) {
+      if(l<3)this.clearWetLayer(m,l);
       if (m.vbo[l]) gl.deleteBuffer(m.vbo[l]);
       if (m.vao[l]) gl.deleteVertexArray(m.vao[l]);
     }
@@ -193,7 +262,17 @@ export class WorldRenderer {
 
   private lastIndexCap = 0;
 
-  cull(p: TerrainParams, maxDist: number): void {
+  hasVisibleWater(p:TerrainParams, seaLevel?:number):boolean{
+    for(const m of this.visible){
+      const b=m.waterBounds;if(!b)continue;
+      if(seaLevel!==undefined && (m.y0+b[1]>seaLevel+0.21||m.y0+b[4]<seaLevel-0.21))continue;
+      const x=m.x0-p.camX,y=m.y0-p.camY,z=m.z0-p.camZ;
+      if(p.frustum.testBox(x+b[0],y+b[1],z+b[2],x+b[3],y+b[4],z+b[5]))return true;
+    }
+    return false;
+  }
+
+  cull(p: TerrainParams, maxDist: number): SectionMesh[] {
     if (this.indices.capacity !== this.lastIndexCap) {
       if (this.lastIndexCap !== 0) this.rebindIndices();
       this.lastIndexCap = this.indices.capacity;
@@ -202,6 +281,11 @@ export class WorldRenderer {
     const md2 = (maxDist + 16) * (maxDist + 16);
     for (const m of this.meshes.values()) {
       const x = m.x0 - p.camX, y = m.y0 - p.camY, z = m.z0 - p.camZ;
+      if(p.hyper?.reflectionPass){
+        // Whole sections on the clipped side contribute no reflected pixels.
+        const plane=p.hyper.reflectY;
+        if(p.hyper.underwater?m.y0-2>plane:m.y0+18<plane)continue;
+      }
       const dx = x + 8, dz = z + 8;
       if (dx * dx + dz * dz > md2) continue;
       if (!p.frustum.testBox(x, y, z, x + 16, y + 16, z + 16)) continue;
@@ -216,11 +300,24 @@ export class WorldRenderer {
     this.visible = vis;
     this.stats.sections = this.meshes.size;
     this.stats.drawn = vis.length;
+    return vis;
   }
 
-  private setup(p: TerrainParams): Shader {
+  restoreVisible(visible:SectionMesh[]):void{
+    this.visible=visible;
+    this.stats.drawn=visible.length;
+  }
+
+  private setup(p: TerrainParams, pass = 0): Shader {
     const gl = this.gl;
-    const s = this.shader.use();
+    let shader=this.shader;
+    if(p.hyper){
+      const key=`${p.hyper.dimension}:${pass}`;
+      let specialized=this.hyperShaders.get(key);
+      if(!specialized){specialized=new Shader(gl,HYPER_TERRAIN_VS,specializeHyperShader(HYPER_TERRAIN_FS,p.hyper.dimension,pass),`hyperShader.terrain.${key}`);this.hyperShaders.set(key,specialized);}
+      shader=specialized;
+    }
+    const s = shader.use();
     s.mat4('u_proj', p.proj);
     s.mat4('u_view', p.view);
     s.vec4('u_fogColor', p.fogColor[0], p.fogColor[1], p.fogColor[2], 1);
@@ -232,14 +329,52 @@ export class WorldRenderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, p.lightmap);
     s.i('u_lightmap', 1);
+    if (p.hyper) p.hyper.bindTerrain(s);
     return s;
   }
 
-  drawOpaque(p: TerrainParams): void {
+  /** Shadows include nearby off-camera terrain, so a tree behind us can cast into view. */
+  drawShadow(p: TerrainParams, matrix: Mat4, radius: number): void {
     const gl = this.gl;
-    const s = this.setup(p);
+    const cutout = this.shadowShader ??= new Shader(gl, SHADOW_VS, SHADOW_FS, 'hyperShader.shadow');
+    const solid = this.solidShadowShader ??= new Shader(gl, SHADOW_VS, '#version 300 es\nprecision highp float;\nvoid main(){}', 'hyperShader.shadow.solid');
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, p.atlas);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1.5, 3);
+    this.shadowFrustum.setFromMatrix(matrix);
+    const casters=this.shadowCasters;casters.length=0;
+    for(const m of this.meshes.values()){
+      const x=m.x0-p.camX,y=m.y0-p.camY,z=m.z0-p.camZ;
+      if(Math.abs(x+8)>radius+24||Math.abs(z+8)>radius+24)continue;
+      if(this.shadowFrustum.testBox(x,y,z,x+16,y+16,z+16))casters.push(m);
+    }
+    for (let l = 0; l < 3; l++) {
+      // Solid blocks need depth alone; reserve texture/alpha work for cutouts.
+      const s=(l===0?solid:cutout).use();
+      s.mat4('u_lightMatrix',matrix);s.i('u_atlas',0);
+      s.f('u_time',p.hyper?.time??0);s.vec3('u_camera',p.camX,p.camY,p.camZ);
+      s.f('u_alphaCutoff', l === 0 ? -1 : l === 1 ? 0.5 : 0.1);
+      for (const m of casters) {
+        if (!m.quads[l]) continue;
+        s.vec3('u_offset', m.x0 - p.camX, m.y0 - p.camY, m.z0 - p.camZ);
+        gl.bindVertexArray(m.vao[l]);
+        gl.drawElements(gl.TRIANGLES, m.quads[l] * 6, gl.UNSIGNED_INT, 0);
+      }
+    }
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    gl.bindVertexArray(null);
+  }
+
+  drawOpaque(p: TerrainParams, wetPass=false): void {
+    const gl = this.gl;
+    const s = this.setup(p,wetPass?2:0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(wetPass?gl.EQUAL:gl.LEQUAL);
     gl.enable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
     let quads = 0;
@@ -247,21 +382,22 @@ export class WorldRenderer {
     for (let l = 0; l < 3; l++) {
       s.f('u_alphaCutoff', cutoffs[l]);
       for (const m of this.visible) {
-        const n = m.quads[l];
+        const n = wetPass ? m.wetQuads[l] : m.quads[l];
         if (!n) continue;
         s.vec3('u_offset', m.x0 - p.camX, m.y0 - p.camY, m.z0 - p.camZ);
-        gl.bindVertexArray(m.vao[l]);
+        gl.bindVertexArray(wetPass ? m.wetVao[l] : m.vao[l]);
         gl.drawElements(gl.TRIANGLES, n * 6, gl.UNSIGNED_INT, 0);
         quads += n;
       }
     }
     gl.bindVertexArray(null);
+    gl.depthFunc(gl.LEQUAL);
     this.stats.quads = quads;
   }
 
   drawTranslucent(p: TerrainParams): void {
     const gl = this.gl;
-    const s = this.setup(p);
+    const s = this.setup(p,1);
     s.f('u_alphaCutoff', -1);
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);

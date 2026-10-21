@@ -199,7 +199,7 @@ function hasTransparency(frames: Uint8ClampedArray[]): boolean {
   return false;
 }
 
-/** Vanilla MipmapGenerator-style 2x downsample. */
+/** Alpha-weighted straight-colour mipmaps: empty texels must not blacken foliage. */
 export function downsample(src: Uint8ClampedArray, sz: number, transparent: boolean): Uint8ClampedArray {
   const d = sz >> 1;
   const out = new Uint8ClampedArray(d * d * 4);
@@ -210,18 +210,18 @@ export function downsample(src: Uint8ClampedArray, sz: number, transparent: bool
       if (transparent) {
         let a = 0, r = 0, g = 0, b = 0;
         for (const i of [i0, i1, i2, i3]) {
-          if (src[i + 3] !== 0) {
-            a += POW22[src[i + 3]];
-            r += POW22[src[i]];
-            g += POW22[src[i + 1]];
-            b += POW22[src[i + 2]];
-          }
+          const weight = POW22[src[i + 3]];
+          a += weight;
+          r += POW22[src[i]] * weight;
+          g += POW22[src[i + 1]] * weight;
+          b += POW22[src[i + 2]] * weight;
         }
         let ai = Math.floor(Math.pow(a / 4, 1 / 2.2) * 255);
         if (ai < 96) ai = 0;
-        out[o] = Math.floor(Math.pow(r / 4, 1 / 2.2) * 255);
-        out[o + 1] = Math.floor(Math.pow(g / 4, 1 / 2.2) * 255);
-        out[o + 2] = Math.floor(Math.pow(b / 4, 1 / 2.2) * 255);
+        const colourWeight = a > 0 ? 1 / a : 0;
+        out[o] = Math.floor(Math.pow(r * colourWeight, 1 / 2.2) * 255);
+        out[o + 1] = Math.floor(Math.pow(g * colourWeight, 1 / 2.2) * 255);
+        out[o + 2] = Math.floor(Math.pow(b * colourWeight, 1 / 2.2) * 255);
         out[o + 3] = ai;
       } else {
         for (let c = 0; c < 4; c++) {

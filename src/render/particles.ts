@@ -130,7 +130,10 @@ const SNOWFLAKE = Array.from({ length: 5 }, (_, i) => `snowflake_${i}`);
  */
 const GLITTER = Array.from({ length: 8 }, (_, i) => `glitter_${7 - i}`);
 
+const NETHER_MOTES = new Set(['ash', 'white_ash', 'crimson_spore', 'warped_spore']);
+
 export class ParticleEngine {
+  subtleNetherAmbient = false;
   private readonly list: Particle[] = [];
   private readonly sprites: SpriteParticle[] = [];
   /** spore blossom air particles alive (vanilla keeps at most 1000) */
@@ -1724,13 +1727,13 @@ export class ParticleEngine {
     batch.begin({ texture: this.spriteTexture, cutoff: 0.1, blend: false, cull: false, lit: false, useLightmap: true });
     let translucent = false;
     for (const p of this.sprites) {
-      if (p.alpha !== undefined) translucent = true;
+      if (p.alpha !== undefined || this.subtleNetherAmbient && NETHER_MOTES.has(p.kind)) translucent = true;
       else this.renderSprite(batch, p, cam, partial);
     }
     batch.flush();
     if (!translucent) return;
     batch.begin({ texture: this.spriteTexture, cutoff: 0.01, blend: true, cull: false, lit: false, useLightmap: true, depthWrite: false });
-    for (const p of this.sprites) if (p.alpha !== undefined) this.renderSprite(batch, p, cam, partial);
+    for (const p of this.sprites) if (p.alpha !== undefined || this.subtleNetherAmbient && NETHER_MOTES.has(p.kind)) this.renderSprite(batch, p, cam, partial);
     batch.flush();
   }
 
@@ -1784,6 +1787,14 @@ export class ParticleEngine {
       s *= 1 - f;
     }
     let alpha = p.alpha ?? 1;
+    if(this.subtleNetherAmbient && NETHER_MOTES.has(p.kind)){
+      const distance=Math.hypot(x,y,z);
+      if(distance<1.25)return;
+      s*=0.42;
+      // Fine, translucent motes fade near the camera instead of becoming
+      // opaque, screen-sized flakes. The haze is rendered separately.
+      alpha*=0.42*Math.min(1,(distance-1.25)/2.0);
+    }
     // (trial chambers) vanilla Particle.LifetimeAlpha.currentAlphaForAge
     if (p.lifetimeAlpha) {
       const [a0, a1, t0, t1] = p.lifetimeAlpha;
